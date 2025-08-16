@@ -1,17 +1,13 @@
 using System;
 using System.Threading;
 using UnityEngine.Assertions;
+using Unity.Mathematics;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Burst;
 using UnityEngine.Profiling;
-
-[assembly: RegisterGenericJobType(typeof(UnityEngine.Rendering.RegisterNewInstancesJob<UnityEngine.Rendering.BatchMeshID>))]
-[assembly: RegisterGenericJobType(typeof(UnityEngine.Rendering.RegisterNewInstancesJob<UnityEngine.Rendering.BatchMaterialID>))]
-[assembly: RegisterGenericJobType(typeof(UnityEngine.Rendering.FindNonRegisteredInstancesJob<UnityEngine.Rendering.BatchMeshID>))]
-[assembly: RegisterGenericJobType(typeof(UnityEngine.Rendering.FindNonRegisteredInstancesJob<UnityEngine.Rendering.BatchMaterialID>))]
 
 namespace UnityEngine.Rendering
 {
@@ -191,339 +187,133 @@ namespace UnityEngine.Rendering
     }
 
     [BurstCompile(DisableSafetyChecks = true, OptimizeFor = OptimizeFor.Performance)]
-    internal struct FindNonRegisteredInstancesJob<T> : IJobParallelForBatch where T : unmanaged
+    internal struct FindNonRegisteredMeshesJob : IJobParallelForBatch
     {
         public const int k_BatchSize = 128;
 
         [ReadOnly] public NativeArray<int> instanceIDs;
-        [ReadOnly] public NativeParallelHashMap<int, T> hashMap;
+        [ReadOnly] public NativeParallelHashMap<int, BatchMeshID> hashMap;
 
         [WriteOnly] public NativeList<int>.ParallelWriter outInstancesWriter;
 
         public unsafe void Execute(int startIndex, int count)
         {
-            int* notFoundinstanceIDs = stackalloc int[k_BatchSize];
-            int length = 0;
+            int* notFoundinstanceIDsPtr = stackalloc int[k_BatchSize];
+            var notFoundinstanceIDs = new UnsafeList<int>(notFoundinstanceIDsPtr, k_BatchSize);
+
+            notFoundinstanceIDs.Length = 0;
 
             for (int i = startIndex; i < startIndex + count; ++i)
             {
                 int instanceID = instanceIDs[i];
 
                 if (!hashMap.ContainsKey(instanceID))
-                    notFoundinstanceIDs[length++] = instanceID;
+                    notFoundinstanceIDs.AddNoResize(instanceID);
             }
 
-            outInstancesWriter.AddRangeNoResize(notFoundinstanceIDs, length);
+            outInstancesWriter.AddRangeNoResize(notFoundinstanceIDsPtr, notFoundinstanceIDs.Length);
         }
     }
 
     [BurstCompile(DisableSafetyChecks = true, OptimizeFor = OptimizeFor.Performance)]
-    internal struct RegisterNewInstancesJob<T> : IJobParallelFor where T : unmanaged
+    internal struct FindNonRegisteredMaterialsJob : IJobParallelForBatch
     {
         public const int k_BatchSize = 128;
 
         [ReadOnly] public NativeArray<int> instanceIDs;
-        [ReadOnly] public NativeArray<T> batchIDs;
+        [ReadOnly] public NativeArray<GPUDrivenPackedMaterialData> packedMaterialDatas;
+        [ReadOnly] public NativeParallelHashMap<int, BatchMaterialID> hashMap;
 
-        [WriteOnly] public NativeParallelHashMap<int, T>.ParallelWriter hashMap;
+        [WriteOnly] public NativeList<int>.ParallelWriter outInstancesWriter;
+        [WriteOnly] public NativeList<GPUDrivenPackedMaterialData>.ParallelWriter outPackedMaterialDatasWriter;
 
-        public unsafe void Execute(int index)
+        public unsafe void Execute(int startIndex, int count)
+        {
+            int* notFoundinstanceIDsPtr = stackalloc int[k_BatchSize];
+            var notFoundinstanceIDs = new UnsafeList<int>(notFoundinstanceIDsPtr, k_BatchSize);
+
+            GPUDrivenPackedMaterialData* notFoundPackedMaterialDatasPtr = stackalloc GPUDrivenPackedMaterialData[k_BatchSize];
+            var notFoundPackedMaterialDatas = new UnsafeList<GPUDrivenPackedMaterialData>(notFoundPackedMaterialDatasPtr, k_BatchSize);
+
+            notFoundinstanceIDs.Length = 0;
+            notFoundPackedMaterialDatas.Length = 0;
+
+            for (int i = startIndex; i < startIndex + count; ++i)
+            {
+                int instanceID = instanceIDs[i];
+
+                if (!hashMap.ContainsKey(instanceID))
+                {
+                    notFoundinstanceIDs.AddNoResize(instanceID);
+                    notFoundPackedMaterialDatas.AddNoResize(packedMaterialDatas[i]);
+                }
+            }
+
+            outInstancesWriter.AddRangeNoResize(notFoundinstanceIDsPtr, notFoundinstanceIDs.Length);
+            outPackedMaterialDatasWriter.AddRangeNoResize(notFoundPackedMaterialDatasPtr, notFoundPackedMaterialDatas.Length);
+        }
+    }
+
+    [BurstCompile(DisableSafetyChecks = true, OptimizeFor = OptimizeFor.Performance)]
+    internal struct RegisterNewMeshesJob : IJobParallelFor
+    {
+        public const int k_BatchSize = 128;
+
+        [ReadOnly] public NativeArray<int> instanceIDs;
+        [ReadOnly] public NativeArray<BatchMeshID> batchIDs;
+
+        [WriteOnly] public NativeParallelHashMap<int, BatchMeshID>.ParallelWriter hashMap;
+
+        public void Execute(int index)
         {
             hashMap.TryAdd(instanceIDs[index], batchIDs[index]);
         }
     }
 
     [BurstCompile(DisableSafetyChecks = true, OptimizeFor = OptimizeFor.Performance)]
-    internal struct RemoveDrawInstanceIndicesJob : IJob
+    internal struct RegisterNewMaterialsJob : IJobParallelFor
     {
-        [NativeDisableContainerSafetyRestriction, NoAlias] [ReadOnly] public NativeArray<int> drawInstanceIndices;
+        public const int k_BatchSize = 128;
 
-        public NativeList<DrawInstance> drawInstances;
-        public NativeParallelHashMap<RangeKey, int> rangeHash;
-        public NativeParallelHashMap<DrawKey, int> batchHash;
-        public NativeList<DrawRange> drawRanges;
-        public NativeList<DrawBatch> drawBatches;
+        [ReadOnly] public NativeArray<int> instanceIDs;
+        [ReadOnly] public NativeArray<GPUDrivenPackedMaterialData> packedMaterialDatas;
+        [ReadOnly] public NativeArray<BatchMaterialID> batchIDs;
 
-        public void RemoveDrawRange(in RangeKey key)
+        [WriteOnly] public NativeParallelHashMap<int, BatchMaterialID>.ParallelWriter batchMaterialHashMap;
+        [WriteOnly] public NativeParallelHashMap<int, GPUDrivenPackedMaterialData>.ParallelWriter packedMaterialHashMap;
+
+        public void Execute(int index)
         {
-            int drawRangeIndex = rangeHash[key];
-
-            ref DrawRange lastDrawRange = ref drawRanges.ElementAt(drawRanges.Length - 1);
-            rangeHash[lastDrawRange.key] = drawRangeIndex;
-
-            rangeHash.Remove(key);
-            drawRanges.RemoveAtSwapBack(drawRangeIndex);
-        }
-
-        public void RemoveDrawBatch(in DrawKey key)
-        {
-            int drawBatchIndex = batchHash[key];
-
-            ref DrawBatch drawBatch = ref drawBatches.ElementAt(drawBatchIndex);
-
-            int drawRangeIndex = rangeHash[key.range];
-            ref DrawRange drawRange = ref drawRanges.ElementAt(drawRangeIndex);
-
-            Assert.IsTrue(drawRange.drawCount > 0);
-
-            if (--drawRange.drawCount == 0)
-                RemoveDrawRange(drawRange.key);
-
-            ref DrawBatch lastDrawBatch = ref drawBatches.ElementAt(drawBatches.Length - 1);
-            batchHash[lastDrawBatch.key] = drawBatchIndex;
-
-            batchHash.Remove(key);
-            drawBatches.RemoveAtSwapBack(drawBatchIndex);
-        }
-
-        public unsafe void Execute()
-        {
-            var drawInstancesPtr = (DrawInstance*)drawInstances.GetUnsafePtr();
-            var drawInstancesNewBack = drawInstances.Length - 1;
-
-            for (int indexRev = drawInstanceIndices.Length - 1; indexRev >= 0; --indexRev)
-            {
-                int indexToRemove = drawInstanceIndices[indexRev];
-                DrawInstance* drawInstance = drawInstancesPtr + indexToRemove;
-
-                int drawBatchIndex = batchHash[drawInstance->key];
-                ref DrawBatch drawBatch = ref drawBatches.ElementAt(drawBatchIndex);
-
-                Assert.IsTrue(drawBatch.instanceCount > 0);
-
-                if (--drawBatch.instanceCount == 0)
-                    RemoveDrawBatch(drawBatch.key);
-
-                UnsafeUtility.MemCpy(drawInstance, drawInstancesPtr + drawInstancesNewBack--, sizeof(DrawInstance));
-            }
-
-            drawInstances.ResizeUninitialized(drawInstancesNewBack + 1);
+            var instanceID = instanceIDs[index];
+            batchMaterialHashMap.TryAdd(instanceID, batchIDs[index]);
+            packedMaterialHashMap.TryAdd(instanceID, packedMaterialDatas[index]);
         }
     }
 
     [BurstCompile(DisableSafetyChecks = true, OptimizeFor = OptimizeFor.Performance)]
-    internal struct CreateDrawBatchesJob : IJob
+    internal struct UpdatePackedMaterialDataCacheJob : IJob
     {
-        [ReadOnly] public bool implicitInstanceIndices;
-        [ReadOnly] public NativeArray<InstanceHandle> instances;
-        [ReadOnly] public GPUDrivenRendererGroupData rendererData;
-        [ReadOnly] public NativeParallelHashMap<int, BatchMeshID> batchMeshHash;
-        [ReadOnly] public NativeParallelHashMap<int, BatchMaterialID> batchMaterialHash;
+        [ReadOnly] public NativeArray<int>.ReadOnly materialIDs;
+        [ReadOnly] public NativeArray<GPUDrivenPackedMaterialData>.ReadOnly packedMaterialDatas;
 
-        public NativeParallelHashMap<RangeKey, int> rangeHash;
-        public NativeList<DrawRange> drawRanges;
-        public NativeParallelHashMap<DrawKey, int> batchHash;
-        public NativeList<DrawBatch> drawBatches;
+        public NativeParallelHashMap<int, GPUDrivenPackedMaterialData> packedMaterialHash;
 
-        [WriteOnly] public NativeList<DrawInstance> drawInstances;
-
-        private ref DrawRange EditDrawRange(in RangeKey key)
+        private void ProcessMaterial(int i)
         {
-            int drawRangeIndex;
+            var materialID = materialIDs[i];
+            var packedMaterialData = packedMaterialDatas[i];
 
-            if (!rangeHash.TryGetValue(key, out drawRangeIndex))
-            {
-                var drawRange = new DrawRange { key = key, drawCount = 0, drawOffset = 0 };
-                drawRangeIndex = drawRanges.Length;
-                rangeHash.Add(key, drawRangeIndex);
-                drawRanges.Add(drawRange);
-            }
-
-            ref DrawRange data = ref drawRanges.ElementAt(drawRangeIndex);
-            Assert.IsTrue(data.key.Equals(key));
-
-            return ref data;
-        }
-
-        private ref DrawBatch EditDrawBatch(in DrawKey key, in SubMeshDescriptor subMeshDescriptor)
-        {
-            var procInfo = new MeshProceduralInfo();
-            procInfo.topology = subMeshDescriptor.topology;
-            procInfo.baseVertex = (uint)subMeshDescriptor.baseVertex;
-            procInfo.firstIndex = (uint)subMeshDescriptor.indexStart;
-            procInfo.indexCount = (uint)subMeshDescriptor.indexCount;
-
-            int drawBatchIndex;
-
-            if (!batchHash.TryGetValue(key, out drawBatchIndex))
-            {
-                var drawBatch = new DrawBatch() { key = key, instanceCount = 0, instanceOffset = 0, procInfo = procInfo };
-                drawBatchIndex = drawBatches.Length;
-                batchHash.Add(key, drawBatchIndex);
-                drawBatches.Add(drawBatch);
-            }
-
-            ref DrawBatch data = ref drawBatches.ElementAt(drawBatchIndex);
-            Assert.IsTrue(data.key.Equals(key));
-
-            return ref data;
-        }
-
-        public void ProcessRenderer(int i)
-        {
-            var meshIndex = rendererData.meshIndex[i];
-            var meshID = rendererData.meshID[meshIndex];
-            var submeshCount = rendererData.subMeshCount[meshIndex];
-            var subMeshDescOffset = rendererData.subMeshDescOffset[meshIndex];
-            var batchMeshID = batchMeshHash[meshID];
-            var rendererGroupID = rendererData.rendererGroupID[i];
-            var startSubMesh = rendererData.subMeshStartIndex[i];
-            var gameObjectLayer = rendererData.gameObjectLayer[i];
-            var renderingLayerMask = rendererData.renderingLayerMask[i];
-            var materialsOffset = rendererData.materialsOffset[i];
-            var materialsCount = rendererData.materialsCount[i];
-            var lightmapIndex = rendererData.lightmapIndex[i];
-            var packedRendererData = rendererData.packedRendererData[i];
-            var rendererPriority = rendererData.rendererPriority[i];
-            var lodGroupID = rendererData.lodGroupID[i];
-
-            int instanceCount;
-            int instanceOffset;
-
-            if (implicitInstanceIndices)
-            {
-                instanceCount = 1;
-                instanceOffset = i;
-            }
-            else
-            {
-                instanceCount = rendererData.instancesCount[i];
-                instanceOffset = rendererData.instancesOffset[i];
-            }
-
-            if (instanceCount == 0)
+            if (materialID == 0)
                 return;
 
-            const int kLightmapIndexMask = 0xffff;
-            const int kLightmapIndexInfluenceOnly = 0xfffe;
-
-            var overridenComponents = InstanceComponentGroup.Default;
-
-            // Add per-instance wind parameters
-            if(packedRendererData.hasTree)
-                overridenComponents |= InstanceComponentGroup.Wind;
-
-            var lmIndexMasked = lightmapIndex & kLightmapIndexMask;
-
-            // Object doesn't have a valid lightmap Index, -> uses probes for lighting
-            if (lmIndexMasked >= kLightmapIndexInfluenceOnly)
-            {
-                // Only add the component when needed to store blended results (shader will use the ambient probe when not present)
-                if (packedRendererData.lightProbeUsage == LightProbeUsage.BlendProbes)
-                    overridenComponents |= InstanceComponentGroup.LightProbe;
-            }
-            else
-            {
-                // Add per-instance lightmap parameters
-                overridenComponents |= InstanceComponentGroup.Lightmap;
-            }
-
-            // Scan all materials once to retrieve whether this renderer is indirect-compatible or not (and store it in the RangeKey).
-            var supportsIndirect = true;
-            for (int matIndex = 0; matIndex < materialsCount; ++matIndex)
-            {
-                if (matIndex >= submeshCount)
-                {
-                    Debug.LogWarning("Material count in the shared material list is higher than sub mesh count for the mesh. Object may be corrupted.");
-                    continue;
-                }
-
-                var materialIndex = rendererData.materialIndex[materialsOffset + matIndex];
-                var packedMaterialData = rendererData.packedMaterialData[materialIndex];
-                supportsIndirect &= packedMaterialData.isIndirectSupported;
-            }
-
-            var rangeKey = new RangeKey
-            {
-                layer = (byte)gameObjectLayer,
-                renderingLayerMask = renderingLayerMask,
-                motionMode = packedRendererData.motionVecGenMode,
-                shadowCastingMode = packedRendererData.shadowCastingMode,
-                staticShadowCaster = packedRendererData.staticShadowCaster,
-                rendererPriority = rendererPriority,
-                supportsIndirect = supportsIndirect
-            };
-
-            ref DrawRange drawRange = ref EditDrawRange(rangeKey);
-
-            for (int matIndex = 0; matIndex < materialsCount; ++matIndex)
-            {
-                if (matIndex >= submeshCount)
-                {
-                    Debug.LogWarning("Material count in the shared material list is higher than sub mesh count for the mesh. Object may be corrupted.");
-                    continue;
-                }
-
-                var materialIndex = rendererData.materialIndex[materialsOffset + matIndex];
-                var materialID = rendererData.materialID[materialIndex];
-                var packedMaterialData = rendererData.packedMaterialData[materialIndex];
-
-                if (materialID == 0)
-                {
-                    Debug.LogWarning("Material in the shared materials list is null. Object will be partially rendered.");
-                    continue;
-                }
-
-                batchMaterialHash.TryGetValue(materialID, out BatchMaterialID batchMaterialID);
-
-                // We always provide crossfade value packed in instance index. We don't use None even if there is no LOD to not split the batch.
-                var flags = BatchDrawCommandFlags.LODCrossFadeValuePacked;
-
-                // Let the engine know if we've opted out of lightmap texture arrays
-                flags |= BatchDrawCommandFlags.UseLegacyLightmapsKeyword;
-
-                // assume that a custom motion vectors pass contains deformation motion, so should always output motion vectors
-                // (otherwise this flag is set dynamically during culling only when the transform is changing)
-                if (packedMaterialData.isMotionVectorsPassEnabled)
-                    flags |= BatchDrawCommandFlags.HasMotion;
-
-                if (packedMaterialData.isTransparent)
-                    flags |= BatchDrawCommandFlags.HasSortingPosition;
-
-                {
-                    var submeshIndex = startSubMesh + matIndex;
-                    var subMeshDesc = rendererData.subMeshDesc[subMeshDescOffset + submeshIndex];
-
-                    var drawKey = new DrawKey
-                    {
-                        materialID = batchMaterialID,
-                        meshID = batchMeshID,
-                        submeshIndex = submeshIndex,
-                        flags = flags,
-                        transparentInstanceId = packedMaterialData.isTransparent ? rendererGroupID : 0,
-                        range = rangeKey,
-                        overridenComponents = (uint)overridenComponents,
-                        // When we've opted out of lightmap texture arrays, we
-                        // need to pass in a valid lightmap index. The engine
-                        // uses this index for sorting and for breaking the
-                        // batch when lightmaps change across draw calls, and
-                        // for binding the correct light map.
-                        lightmapIndex = lightmapIndex
-                    };
-
-                    ref DrawBatch drawBatch = ref EditDrawBatch(drawKey, subMeshDesc);
-
-                    if (drawBatch.instanceCount == 0)
-                        ++drawRange.drawCount;
-
-                    drawBatch.instanceCount += instanceCount;
-
-                    for (int j = 0; j < instanceCount; ++j)
-                    {
-                        var instanceIndex = instanceOffset + j;
-                        InstanceHandle instance = instances[instanceIndex];
-                        drawInstances.Add(new DrawInstance { key = drawKey, instanceIndex = instance.index });
-                    }
-                }
-            }
+            // Cache the packed material so we can detect a change in material that would need to update the renderer data.
+            packedMaterialHash[materialID] = packedMaterialData;
         }
 
         public void Execute()
         {
-            {
-                for (int i = 0; i < rendererData.rendererGroupID.Length; ++i)
-                    ProcessRenderer(i);
-            }
+            for (int i = 0; i < materialIDs.Length; ++i)
+                ProcessMaterial(i);
         }
     }
 
@@ -624,23 +414,16 @@ namespace UnityEngine.Rendering
             internalDrawIndex.Dispose();
         }
 
-        public unsafe void DestroyDrawInstanceIndices(NativeArray<int> drawInstanceIndicesToDestroy)
+        public void DestroyDrawInstanceIndices(NativeArray<int> drawInstanceIndicesToDestroy)
         {
             Profiler.BeginSample("DestroyDrawInstanceIndices.ParallelSort");
             drawInstanceIndicesToDestroy.ParallelSort().Complete();
             Profiler.EndSample();
 
-            var removeDrawInstanceIndicesJob = new RemoveDrawInstanceIndicesJob
-            {
-                drawInstanceIndices = drawInstanceIndicesToDestroy,
-                drawInstances = m_DrawInstances,
-                drawBatches = m_DrawBatches,
-                drawRanges = m_DrawRanges,
-                batchHash = m_BatchHash,
-                rangeHash = m_RangeHash
-            };
-
-            removeDrawInstanceIndicesJob.Run();
+            Profiler.BeginSample("DestroyDrawInstanceIndices.RemoveDrawInstanceIndices");
+            InstanceCullingBatcherBurst.RemoveDrawInstanceIndices(drawInstanceIndicesToDestroy, ref m_DrawInstances, ref m_RangeHash,
+                ref m_BatchHash, ref m_DrawRanges, ref m_DrawBatches);
+            Profiler.EndSample();
         }
 
         public unsafe void DestroyDrawInstances(NativeArray<InstanceHandle> destroyedInstances)
@@ -718,6 +501,7 @@ namespace UnityEngine.Rendering
         private NativeParallelHashMap<uint, BatchID> m_GlobalBatchIDs;
         private InstanceCuller m_Culler;
         private NativeParallelHashMap<int, BatchMaterialID> m_BatchMaterialHash;
+        private NativeParallelHashMap<int, GPUDrivenPackedMaterialData> m_PackedMaterialHash;
         private NativeParallelHashMap<int, BatchMeshID> m_BatchMeshHash;
 
         private int m_CachedInstanceDataBufferLayoutVersion;
@@ -725,6 +509,7 @@ namespace UnityEngine.Rendering
         private OnCullingCompleteCallback m_OnCompleteCallback;
 
         public NativeParallelHashMap<int, BatchMaterialID> batchMaterialHash => m_BatchMaterialHash;
+        public NativeParallelHashMap<int, GPUDrivenPackedMaterialData> packedMaterialHash => m_PackedMaterialHash;
 
         public InstanceCullingBatcher(RenderersBatchersContext batcherContext, InstanceCullingBatcherDesc desc, BatchRendererGroup.OnFinishedCulling onFinishedCulling)
         {
@@ -774,6 +559,7 @@ namespace UnityEngine.Rendering
             m_CachedInstanceDataBufferLayoutVersion = -1;
             m_OnCompleteCallback = desc.onCompleteCallback;
             m_BatchMaterialHash = new NativeParallelHashMap<int, BatchMaterialID>(64, Allocator.Persistent);
+            m_PackedMaterialHash = new NativeParallelHashMap<int, GPUDrivenPackedMaterialData>(64, Allocator.Persistent);
             m_BatchMeshHash = new NativeParallelHashMap<int, BatchMeshID>(64, Allocator.Persistent);
 
             m_GlobalBatchIDs = new NativeParallelHashMap<uint, BatchID>(6, Allocator.Persistent);
@@ -806,6 +592,7 @@ namespace UnityEngine.Rendering
             m_DrawInstanceData = null;
 
             m_BatchMaterialHash.Dispose();
+            m_PackedMaterialHash.Dispose();
             m_BatchMeshHash.Dispose();
         }
 
@@ -882,11 +669,11 @@ namespace UnityEngine.Rendering
                 cullingOutput,
                 m_BatchersContext.instanceData,
                 m_BatchersContext.sharedInstanceData,
+                m_BatchersContext.perCameraInstanceData,
                 m_BatchersContext.instanceDataBuffer,
                 m_BatchersContext.lodGroupCullingData,
                 m_DrawInstanceData,
                 m_GlobalBatchIDs,
-                m_BatchersContext.crossfadedRendererCount,
                 m_BatchersContext.smallMeshScreenPercentage,
                 allowOcclusionCulling ? m_BatchersContext.occlusionCullingCommon : null);
 
@@ -902,12 +689,12 @@ namespace UnityEngine.Rendering
             m_Culler.EnsureValidOcclusionTestResults(viewInstanceID);
         }
 
-        public void DestroyInstances(NativeArray<InstanceHandle> instances)
+        public void DestroyDrawInstances(NativeArray<InstanceHandle> instances)
         {
             if (instances.Length == 0)
                 return;
 
-            Profiler.BeginSample("DestroyInstances");
+            Profiler.BeginSample("DestroyDrawInstances");
 
             m_DrawInstanceData.DestroyDrawInstances(instances);
 
@@ -929,6 +716,7 @@ namespace UnityEngine.Rendering
                 {
                     destroyedBatchMaterials.Add(destroyedBatchMaterial.value);
                     m_BatchMaterialHash.Remove(destroyedMaterial);
+                    m_PackedMaterialHash.Remove(destroyedMaterial);
                     m_BRG.UnregisterMaterial(destroyedBatchMaterial);
                 }
             }
@@ -966,82 +754,97 @@ namespace UnityEngine.Rendering
         private void RegisterBatchMeshes(NativeArray<int> meshIDs)
         {
             var newMeshIDs = new NativeList<int>(meshIDs.Length, Allocator.TempJob);
-            new FindNonRegisteredInstancesJob<BatchMeshID>
+            new FindNonRegisteredMeshesJob
             {
                 instanceIDs = meshIDs,
                 hashMap = m_BatchMeshHash,
                 outInstancesWriter = newMeshIDs.AsParallelWriter()
             }
-            .ScheduleBatch(meshIDs.Length, FindNonRegisteredInstancesJob<BatchMeshID>.k_BatchSize).Complete();
+            .ScheduleBatch(meshIDs.Length, FindNonRegisteredMeshesJob.k_BatchSize).Complete();
             var newBatchMeshIDs = new NativeArray<BatchMeshID>(newMeshIDs.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
             m_BRG.RegisterMeshes(newMeshIDs.AsArray(), newBatchMeshIDs);
 
             int totalMeshesNum = m_BatchMeshHash.Count() + newBatchMeshIDs.Length;
             m_BatchMeshHash.Capacity = Math.Max(m_BatchMeshHash.Capacity, Mathf.CeilToInt(totalMeshesNum / 1023.0f) * 1024);
 
-            new RegisterNewInstancesJob<BatchMeshID>
+            new RegisterNewMeshesJob
             {
                 instanceIDs = newMeshIDs.AsArray(),
                 batchIDs = newBatchMeshIDs,
                 hashMap = m_BatchMeshHash.AsParallelWriter()
             }
-            .Schedule(newMeshIDs.Length, RegisterNewInstancesJob<BatchMeshID>.k_BatchSize).Complete();
+            .Schedule(newMeshIDs.Length, RegisterNewMeshesJob.k_BatchSize).Complete();
 
             newMeshIDs.Dispose();
             newBatchMeshIDs.Dispose();
         }
 
-        private void RegisterBatchMaterials(in NativeArray<int> usedMaterialIDs)
+        private void RegisterBatchMaterials(in NativeArray<int> usedMaterialIDs, in NativeArray<GPUDrivenPackedMaterialData> usedPackedMaterialDatas)
         {
+            Debug.Assert(usedMaterialIDs.Length == usedPackedMaterialDatas.Length, "Each material ID should correspond to one packed material data.");
             var newMaterialIDs = new NativeList<int>(usedMaterialIDs.Length, Allocator.TempJob);
-            new FindNonRegisteredInstancesJob<BatchMaterialID>
+            var newPackedMaterialDatas = new NativeList<GPUDrivenPackedMaterialData>(usedMaterialIDs.Length, Allocator.TempJob);
+            new FindNonRegisteredMaterialsJob
             {
                 instanceIDs = usedMaterialIDs,
+                packedMaterialDatas = usedPackedMaterialDatas,
                 hashMap = m_BatchMaterialHash,
-                outInstancesWriter = newMaterialIDs.AsParallelWriter()
+                outInstancesWriter = newMaterialIDs.AsParallelWriter(),
+                outPackedMaterialDatasWriter = newPackedMaterialDatas.AsParallelWriter()
             }
-            .ScheduleBatch(usedMaterialIDs.Length, FindNonRegisteredInstancesJob<BatchMaterialID>.k_BatchSize).Complete();
+            .ScheduleBatch(usedMaterialIDs.Length, FindNonRegisteredMaterialsJob.k_BatchSize).Complete();
 
             var newBatchMaterialIDs = new NativeArray<BatchMaterialID>(newMaterialIDs.Length, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
             m_BRG.RegisterMaterials(newMaterialIDs.AsArray(), newBatchMaterialIDs);
 
             int totalMaterialsNum = m_BatchMaterialHash.Count() + newMaterialIDs.Length;
             m_BatchMaterialHash.Capacity = Math.Max(m_BatchMaterialHash.Capacity, Mathf.CeilToInt(totalMaterialsNum / 1023.0f) * 1024);
+            m_PackedMaterialHash.Capacity = m_BatchMaterialHash.Capacity;
 
-            new RegisterNewInstancesJob<BatchMaterialID>
+            new RegisterNewMaterialsJob
             {
                 instanceIDs = newMaterialIDs.AsArray(),
+                packedMaterialDatas = newPackedMaterialDatas.AsArray(),
                 batchIDs = newBatchMaterialIDs,
-                hashMap = m_BatchMaterialHash.AsParallelWriter()
+                batchMaterialHashMap = m_BatchMaterialHash.AsParallelWriter(),
+                packedMaterialHashMap = m_PackedMaterialHash.AsParallelWriter()
             }
-            .Schedule(newMaterialIDs.Length, RegisterNewInstancesJob<BatchMaterialID>.k_BatchSize).Complete();
+            .Schedule(newMaterialIDs.Length, RegisterNewMaterialsJob.k_BatchSize).Complete();
 
             newMaterialIDs.Dispose();
+            newPackedMaterialDatas.Dispose();
             newBatchMaterialIDs.Dispose();
+        }
+
+        public JobHandle SchedulePackedMaterialCacheUpdate(NativeArray<int> materialIDs, NativeArray<GPUDrivenPackedMaterialData> packedMaterialDatas)
+        {
+            return new UpdatePackedMaterialDataCacheJob
+            {
+                materialIDs = materialIDs.AsReadOnly(),
+                packedMaterialDatas = packedMaterialDatas.AsReadOnly(),
+                packedMaterialHash = m_PackedMaterialHash
+            }.Schedule();
         }
 
         public void BuildBatch(
             NativeArray<InstanceHandle> instances,
-            NativeArray<int> usedMaterialIDs,
-            NativeArray<int> usedMeshIDs,
-            in GPUDrivenRendererGroupData rendererData)
+            in GPUDrivenRendererGroupData rendererData,
+            bool registerMaterialsAndMeshes)
         {
-            RegisterBatchMaterials(usedMaterialIDs);
-            RegisterBatchMeshes(usedMeshIDs);
-
-            new CreateDrawBatchesJob
+            if (registerMaterialsAndMeshes)
             {
-                implicitInstanceIndices = rendererData.instancesCount.Length == 0,
-                instances = instances,
-                rendererData = rendererData,
-                batchMeshHash = m_BatchMeshHash,
-                batchMaterialHash = m_BatchMaterialHash,
-                rangeHash = m_DrawInstanceData.rangeHash,
-                drawRanges = m_DrawInstanceData.drawRanges,
-                batchHash = m_DrawInstanceData.batchHash,
-                drawBatches = m_DrawInstanceData.drawBatches,
-                drawInstances = m_DrawInstanceData.drawInstances
-            }.Run();
+                RegisterBatchMaterials(rendererData.materialID, rendererData.packedMaterialData);
+                RegisterBatchMeshes(rendererData.meshID);
+            }
+
+            var rangeHash = m_DrawInstanceData.rangeHash;
+            var drawRanges = m_DrawInstanceData.drawRanges;
+            var batchHash = m_DrawInstanceData.batchHash;
+            var drawBatches = m_DrawInstanceData.drawBatches;
+            var drawInstances = m_DrawInstanceData.drawInstances;
+
+            InstanceCullingBatcherBurst.CreateDrawBatches(rendererData.instancesCount.Length == 0, instances, rendererData,
+                m_BatchMeshHash, m_BatchMaterialHash, m_PackedMaterialHash, ref rangeHash, ref drawRanges, ref batchHash, ref drawBatches, ref drawInstances);
 
             m_DrawInstanceData.NeedsRebuild();
             UpdateInstanceDataBufferLayoutVersion();
@@ -1054,7 +857,7 @@ namespace UnityEngine.Rendering
 
         public void UpdateFrame()
         {
-            m_Culler.UpdateFrame();
+            m_Culler.UpdateFrame(m_BatchersContext.cameraCount);
         }
 
         public ParallelBitArray GetCompactedVisibilityMasks(bool syncCullingJobs)

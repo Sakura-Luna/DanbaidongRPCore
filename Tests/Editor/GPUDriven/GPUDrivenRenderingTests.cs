@@ -38,6 +38,7 @@ namespace UnityEngine.Rendering.Tests
         private RenderPipelineAsset m_OldPipelineAsset;
         private GPUResidentDrawerResources m_Resources;
         private RenderPassGlobalSettings m_GlobalSettings;
+        private bool m_oldEnableLodCrossFade;
 
         class BoxedCounter
         {
@@ -85,6 +86,8 @@ namespace UnityEngine.Rendering.Tests
             m_OldPipelineAsset = GraphicsSettings.defaultRenderPipeline;
             GraphicsSettings.defaultRenderPipeline = m_RenderPipe;
             m_Resources = GraphicsSettings.GetRenderPipelineSettings<GPUResidentDrawerResources>();
+            m_oldEnableLodCrossFade = QualitySettings.enableLODCrossFade;
+            QualitySettings.enableLODCrossFade = true;
         }
 
         [TearDown]
@@ -93,6 +96,7 @@ namespace UnityEngine.Rendering.Tests
             m_RenderPipe = null;
             m_MeshTestData.Dispose();
             GraphicsSettings.defaultRenderPipeline = m_OldPipelineAsset;
+            QualitySettings.enableLODCrossFade = m_oldEnableLodCrossFade;
         }
 
         [Test, ConditionalIgnore("IgnoreGfxAPI", "Graphics API Not Supported.")]
@@ -137,7 +141,7 @@ namespace UnityEngine.Rendering.Tests
                     Assert.IsTrue(brg.instanceCullingBatcher.GetDrawInstanceData().drawInstances.Length == 3);
 
                     brgContext.ScheduleQueryRendererGroupInstancesJob(objIDs.AsArray(), instances).Complete();
-                    brg.DestroyInstances(instances);
+                    brg.DestroyDrawInstances(instances);
 
                     Assert.IsTrue(brg.instanceCullingBatcher.GetDrawInstanceData().drawInstances.Length == 0);
                 }
@@ -189,10 +193,11 @@ namespace UnityEngine.Rendering.Tests
                 var callbackCounter = new BoxedCounter();
                 cpuDrivenDesc.onCompleteCallback = (JobHandle jobHandle, in BatchCullingContext cc, in BatchCullingOutput cullingOutput) =>
                 {
+                    jobHandle.Complete();
+
                     if (cc.viewType != BatchCullingViewType.Camera)
                         return;
 
-                    jobHandle.Complete();
                     BatchCullingOutputDrawCommands drawCommands = cullingOutput.drawCommands[0];
 
                     var materials = new NativeParallelHashSet<BatchMaterialID>(10, Allocator.Temp);
@@ -221,6 +226,8 @@ namespace UnityEngine.Rendering.Tests
 
                 using (var brg = new GPUResidentBatcher(brgContext, cpuDrivenDesc, gpuDrivenProcessor))
                 {
+                    brg.OnBeginContextRendering();
+
                     brg.UpdateRenderers(objIDs.AsArray());
 
                     var cameraObject = new GameObject("myCamera");
@@ -228,13 +235,15 @@ namespace UnityEngine.Rendering.Tests
 
                     SubmitCameraRenderRequest(mainCamera);
 
+                    brg.OnEndContextRendering();
+
                     Assert.AreEqual(1, callbackCounter.Value);
 
                     mainCamera = null;
                     GameObject.DestroyImmediate(cameraObject);
 
                     brgContext.ScheduleQueryRendererGroupInstancesJob(objIDs.AsArray(), instances).Complete();
-                    brg.DestroyInstances(instances);
+                    brg.DestroyDrawInstances(instances);
                 }
             }
 
@@ -268,16 +277,19 @@ namespace UnityEngine.Rendering.Tests
 
                 cpuDrivenDesc.onCompleteCallback = (JobHandle jobHandle, in BatchCullingContext cc, in BatchCullingOutput cullingOutput) =>
                 {
+                    jobHandle.Complete();
+
                     if (cc.viewType != BatchCullingViewType.Camera)
                         return;
 
-                    jobHandle.Complete();
                     BatchCullingOutputDrawCommands drawCommands = cullingOutput.drawCommands[0];
                     callbackCounter.Value = drawCommands.visibleInstanceCount;
                 };
 
                 using (var brg = new GPUResidentBatcher(brgContext, cpuDrivenDesc, gpuDrivenProcessor))
                 {
+                    brg.OnBeginContextRendering();
+
                     brg.UpdateRenderers(objIDs);
 
                     var cameraObject = new GameObject("SceneViewCamera");
@@ -298,9 +310,11 @@ namespace UnityEngine.Rendering.Tests
                     brg.OnEndCameraRendering(mainCamera);
                     Assert.AreEqual(callbackCounter.Value, 1);
 
+                    brg.OnEndContextRendering();
+
                     GameObject.DestroyImmediate(cameraObject);
                     brgContext.ScheduleQueryRendererGroupInstancesJob(objIDs, instances).Complete();
-                    brg.DestroyInstances(instances);
+                    brg.DestroyDrawInstances(instances);
                 }
             }
 
@@ -346,10 +360,11 @@ namespace UnityEngine.Rendering.Tests
                 var cpuDrivenDesc = InstanceCullingBatcherDesc.NewDefault();
                 cpuDrivenDesc.onCompleteCallback = (JobHandle jobHandle, in BatchCullingContext cc, in BatchCullingOutput cullingOutput) =>
                 {
+                    jobHandle.Complete();
+
                     if (cc.viewType != BatchCullingViewType.Camera)
                         return;
 
-                    jobHandle.Complete();
                     BatchCullingOutputDrawCommands drawCommands = cullingOutput.drawCommands[0];
 
                     var drawCommandCount = 0U;
@@ -370,6 +385,8 @@ namespace UnityEngine.Rendering.Tests
 
                 using (var brg = new GPUResidentBatcher(brgContext, cpuDrivenDesc, gpuDrivenProcessor))
                 {
+                    brg.OnBeginContextRendering();
+
                     brg.UpdateRenderers(objIDs.AsArray());
 
                     var cameraObject = new GameObject("myCamera");
@@ -377,11 +394,13 @@ namespace UnityEngine.Rendering.Tests
 
                     SubmitCameraRenderRequest(mainCamera);
 
+                    brg.OnEndContextRendering();
+
                     mainCamera = null;
                     GameObject.DestroyImmediate(cameraObject);
 
                     brgContext.ScheduleQueryRendererGroupInstancesJob(objIDs.AsArray(), instances).Complete();
-                    brg.DestroyInstances(instances);
+                    brg.DestroyDrawInstances(instances);
                 }
             }
 
@@ -458,10 +477,11 @@ namespace UnityEngine.Rendering.Tests
                 var expectedDrawCommandCount = 2;
                 cpuDrivenDesc.onCompleteCallback = (JobHandle jobHandle, in BatchCullingContext cc, in BatchCullingOutput cullingOutput) =>
                 {
+                    jobHandle.Complete();
+
                     if (cc.viewType != BatchCullingViewType.Camera)
                         return;
 
-                    jobHandle.Complete();
                     BatchCullingOutputDrawCommands drawCommands = cullingOutput.drawCommands[0];
 
                     var drawCommandCount = 0U;
@@ -482,6 +502,8 @@ namespace UnityEngine.Rendering.Tests
 
                 using (var brg = new GPUResidentBatcher(brgContext, cpuDrivenDesc, gpuDrivenProcessor))
                 {
+                    brg.OnBeginContextRendering();
+
                     brgContext.UpdateLODGroups(lodGroupInstancesID.AsArray());
                     brg.UpdateRenderers(objIDs.AsArray());
 
@@ -526,13 +548,15 @@ namespace UnityEngine.Rendering.Tests
                     expectedDrawCommandCount = 1;
                     SubmitCameraRenderRequest(mainCamera);
 
+                    brg.OnEndContextRendering();
+
                     Assert.AreEqual(7, callbackCounter.Value);
 
                     mainCamera = null;
                     GameObject.DestroyImmediate(cameraObject);
 
                     brgContext.ScheduleQueryRendererGroupInstancesJob(objIDs.AsArray(), instances).Complete();
-                    brg.DestroyInstances(instances);
+                    brg.DestroyDrawInstances(instances);
                 }
             }
 
@@ -611,10 +635,11 @@ namespace UnityEngine.Rendering.Tests
                 var expectedDrawCommandCount = 0;
                 cpuDrivenDesc.onCompleteCallback = (JobHandle jobHandle, in BatchCullingContext cc, in BatchCullingOutput cullingOutput) =>
                 {
+                    jobHandle.Complete();
+
                     if (cc.viewType != BatchCullingViewType.Camera)
                         return;
 
-                    jobHandle.Complete();
                     BatchCullingOutputDrawCommands drawCommands = cullingOutput.drawCommands[0];
 
                     unsafe
@@ -626,13 +651,15 @@ namespace UnityEngine.Rendering.Tests
                         {
                             BatchDrawCommand cmd = drawCommands.drawCommands[range.drawCommandsBegin + i];
                             Assert.AreEqual(expectedMeshIDs[i], cmd.meshID.value, "Incorrect mesh rendered");
-                            Assert.AreEqual(cmd.flags & BatchDrawCommandFlags.LODCrossFade, expectedFlags[i], "Incorrect flag for the current draw command");
+                            Assert.AreEqual(expectedFlags[i], cmd.flags & BatchDrawCommandFlags.LODCrossFade, "Incorrect flag for the current draw command");
                         }
                     }
                 };
 
                 using (var brg = new GPUResidentBatcher(brgContext, cpuDrivenDesc, gpuDrivenProcessor))
                 {
+                    brg.OnBeginContextRendering();
+
                     brgContext.UpdateLODGroups(lodGroupInstancesID.AsArray());
                     brg.UpdateRenderers(objIDs.AsArray());
 
@@ -684,11 +711,13 @@ namespace UnityEngine.Rendering.Tests
                     cameraObject.transform.position = new Vector3(0.0f, 0.0f, -4.0f);
                     SubmitCameraRenderRequest(mainCamera);
 
+                    brg.OnEndContextRendering();
+
                     mainCamera = null;
                     GameObject.DestroyImmediate(cameraObject);
 
                     brgContext.ScheduleQueryRendererGroupInstancesJob(objIDs.AsArray(), instances).Complete();
-                    brg.DestroyInstances(instances);
+                    brg.DestroyDrawInstances(instances);
                 }
             }
 
@@ -734,6 +763,9 @@ namespace UnityEngine.Rendering.Tests
             rbcDesc.supportDitheringCrossFade = true;
             rbcDesc.smallMeshScreenPercentage = 10.0f;
 
+            var lastLodBias = QualitySettings.lodBias;
+            QualitySettings.lodBias = 1.0f;
+
             var gpuDrivenProcessor = new GPUDrivenProcessor();
 
             using (var brgContext = new RenderersBatchersContext(rbcDesc, gpuDrivenProcessor, m_Resources))
@@ -744,10 +776,11 @@ namespace UnityEngine.Rendering.Tests
                 var expectedDrawCommandCount = 0;
                 cpuDrivenDesc.onCompleteCallback = (JobHandle jobHandle, in BatchCullingContext cc, in BatchCullingOutput cullingOutput) =>
                 {
+                    jobHandle.Complete();
+
                     if (cc.viewType != BatchCullingViewType.Camera)
                         return;
 
-                    jobHandle.Complete();
                     BatchCullingOutputDrawCommands drawCommands = cullingOutput.drawCommands[0];
 
                     unsafe
@@ -759,13 +792,15 @@ namespace UnityEngine.Rendering.Tests
                         {
                             BatchDrawCommand cmd = drawCommands.drawCommands[range.drawCommandsBegin + i];
                             Assert.AreEqual(expectedMeshIDs[i], cmd.meshID.value, "Incorrect mesh rendered");
-                            Assert.AreEqual(cmd.flags & BatchDrawCommandFlags.LODCrossFade, expectedFlags[i], "Incorrect flag for the current draw command");
+                            Assert.AreEqual(expectedFlags[i], cmd.flags & BatchDrawCommandFlags.LODCrossFade, "Incorrect flag for the current draw command");
                         }
                     }
                 };
 
                 using (var brg = new GPUResidentBatcher(brgContext, cpuDrivenDesc, gpuDrivenProcessor))
                 {
+                    brg.OnBeginContextRendering();
+
                     brg.UpdateRenderers(objIDs.AsArray());
 
                     var cameraObject = new GameObject("myCamera");
@@ -788,7 +823,7 @@ namespace UnityEngine.Rendering.Tests
                     expectedFlags.Clear();
                     expectedFlags.Add(BatchDrawCommandFlags.LODCrossFadeValuePacked);
                     expectedFlags.Add(BatchDrawCommandFlags.LODCrossFade);
-                    expectedDrawCommandCount = 1;
+                    expectedDrawCommandCount = 2;
                     cameraObject.transform.position = new Vector3(0.0f, 0.0f, -8.5f);
                     SubmitCameraRenderRequest(mainCamera);
 
@@ -801,13 +836,17 @@ namespace UnityEngine.Rendering.Tests
                     cameraObject.transform.position = new Vector3(0.0f, 0.0f, -10.0f);
                     SubmitCameraRenderRequest(mainCamera);
 
+                    brg.OnEndContextRendering();
+
                     mainCamera = null;
                     GameObject.DestroyImmediate(cameraObject);
 
                     brgContext.ScheduleQueryRendererGroupInstancesJob(objIDs.AsArray(), instances).Complete();
-                    brg.DestroyInstances(instances);
+                    brg.DestroyDrawInstances(instances);
                 }
             }
+
+            QualitySettings.lodBias = lastLodBias;
 
             gpuDrivenProcessor.Dispose();
 
@@ -1148,7 +1187,7 @@ namespace UnityEngine.Rendering.Tests
             {
                 Assert.IsTrue(rendererData.rendererGroupID.Length == 2);
                 dispatched = true;
-            });
+            }, true);
 
             Assert.IsTrue(dispatched);
 
@@ -1162,7 +1201,7 @@ namespace UnityEngine.Rendering.Tests
                 Assert.IsTrue(rendererData.invalidRendererGroupID.Length == 1);
                 Assert.IsTrue(rendererData.invalidRendererGroupID[0] == renderer0.GetInstanceID());
                 dispatched = true;
-            });
+            }, true);
 
             Assert.IsTrue(dispatched);
 
@@ -1173,7 +1212,7 @@ namespace UnityEngine.Rendering.Tests
             {
                 Assert.IsTrue(rendererData.invalidRendererGroupID.Length == 2);
                 dispatched = true;
-            });
+            }, true);
 
             Assert.IsTrue(dispatched);
 
@@ -1217,9 +1256,13 @@ namespace UnityEngine.Rendering.Tests
 
             gpuDrivenProcessor.EnableGPUDrivenRenderingAndDispatchRendererData(rendererIDs, (in GPUDrivenRendererGroupData rendererData, IList<Mesh> meshes, IList<Material> materials) =>
             {
+                Assert.IsTrue(rendererData.localBounds.Length == 0);
+                Assert.IsTrue(rendererData.localToWorldMatrix.Length == 0);
+                Assert.IsTrue(rendererData.prevLocalToWorldMatrix.Length == 0);
+                Assert.IsTrue(rendererData.lodGroupID.Length == 0);
                 Assert.IsTrue(rendererData.rendererGroupID.Length == 4);
                 dispatched = true;
-            });
+            }, true);
 
             Assert.IsTrue(dispatched);
 
@@ -1233,7 +1276,7 @@ namespace UnityEngine.Rendering.Tests
             {
                 Assert.IsTrue(rendererData.rendererGroupID.Length == 1);
                 dispatched = true;
-            });
+            }, true);
 
             Assert.IsTrue(dispatched);
 
@@ -1275,7 +1318,7 @@ namespace UnityEngine.Rendering.Tests
             {
                 Assert.IsTrue(rendererData.rendererGroupID.Length == 1);
                 dispatched = true;
-            });
+            }, true);
 
             Assert.IsTrue(dispatched);
 
